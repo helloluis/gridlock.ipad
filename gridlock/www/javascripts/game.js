@@ -8,8 +8,30 @@ Game = {
   started             : false,
   paused              : true,
   ended               : false,
-  with_sound          : true,
+  
+  with_css3_animation : true,
 
+  with_sound          : false,
+  with_phonegap_sound : false,  // we use the phonegap sound library for iOS
+  with_sm2_sound      : true,   // soundmanager2 is what we use for regular web presentation
+
+  raw_sounds          : { 
+        horns_short   : [
+          "sounds/horn1.mp3",
+          "sounds/horn2.mp3",
+          "sounds/horn3.mp3",
+          "sounds/horn4.mp3" 
+        ],
+        horns_long    : [
+          "sounds/horn_long1.mp3",
+          "sounds/horn_long2.mp3"
+        ],
+        horn_truck    : "sounds/horn_truck.mp3",
+        bell          : "sounds/bell.mp3",
+        ding          : "sounds/ding.mp3",
+        theme         : "sounds/bg.mp3",
+        explosion     : "sounds/explosion_short.mp3"
+      },
   sounds              : {},
   
   streets             : [],
@@ -20,6 +42,15 @@ Game = {
   
   maker_freq          : 3000,
   max_cars_per_street : 10,
+  car_types           : {
+          car         : { type : 'car', width : 20, height : 35, frustrates_by : 1,
+            colors    : [ 'orange' ]
+          },
+          jeepney     : { type : 'jeepney', width : 20, height : 45, frustrates_by : 1.5 },
+          van         : { type : 'van', width : 15, height : 40, frustrates_by : 1.5 },
+          bus         : { type : 'bus', width : 15, height : 55, frustrates_by : 2 },
+          ambulance   : { type : 'ambulance', width : 15, height : 40, frustrates_by : 5 }
+        },
   
   db_name             : "gridlock",
   high_score_key      : "high_score",
@@ -89,9 +120,45 @@ Game = {
 
   // phonegap function
   initialize_sounds : function() {
-    Game.sounds.honk1  = new Media("/sounds/honk_short.mp3");
-    Game.sounds.honk2  = new Media("/sounds/honk_long.mp3");
-    Game.sounds.explosion = new Media("/sounds/explosion_long.mp3");
+    if (Game.with_sound){
+      if (Game.with_phonegap_sound && typeof Media!=="undefined") {
+
+        _.each(Game.raw_sounds, function(key, media_or_arr){
+          if (typeof media_or_arr=='Array') {
+            _.each(media_or_arr, function(m){
+              Game.sounds[[key, index].join("")] = m;
+            });
+          } else {
+            Game.sounds[key] = new Media(media);  
+          }
+          
+        });
+          
+        console.log( Game.sounds );
+        
+      } else if (Game.with_sm2_sound) {
+        
+        soundManager.onready(function() {
+          //console.log(soundManager.createSound({ id : 'horn1test', url : "sounds/horn_long1.mp3" }));
+
+          _.each(Game.raw_sounds, function(media_or_arr, key){
+            
+            if (_.isArray(media_or_arr)) {
+              _.each(media_or_arr, function(media, index){
+                var new_k = [key, index].join("");
+                var new_obj = soundManager.createSound({ id : new_k, url : media, autoLoad : true });
+                Game.sounds[new_k] = new_obj;
+              });
+            } else {
+              Game.sounds[key] = soundManager.createSound({ id : key, url : media_or_arr, autoLoad : true });
+            }
+            
+          });
+
+        });
+
+      }
+    }
   },
 
   initialize_buttons : function(){
@@ -102,10 +169,6 @@ Game = {
 
     $(".restart").click(function(){
       document.location.reload();
-      // Game.initialize_behaviours();
-      // Game.initialize_controls();
-      // Game.initialize_streets();
-      // Game.start();
     });
     
     $(".pause").click(function(){
@@ -225,6 +288,10 @@ Game = {
     Game.initialize_barriers();
     Game.cars.empty();
 
+    if (Game.with_sound) {
+      Game.sounds.theme.play({ loops : 10 });
+    }
+
     _.each(Game.streets,function(street){
       street.start();
     });
@@ -295,13 +362,21 @@ Game = {
 
     Game.main.everyTime(1000,'countdown',function(){
       
+      if (Game.with_sound && int > 0) {
+        Game.sounds.bell.play();  
+      }
+
       Game.messages.html("<h1 class='countdown'>" + int + "<h1>");
       
       if (int==0){
+        if (Game.with_sound) {
+          Game.sounds.ding.play();  
+        }
         $(".countdown").text("GO!");
       }
 
       if (int==-1) {
+        console.log('finishing countdown');
         $(this).stopTime('countdown');
         Game.started = true;
         Game.paused = false;
@@ -317,6 +392,10 @@ Game = {
 
   reset : function(return_to_intro){
     
+    if (Game.with_sound) {
+      Game.sounds.theme.stop();
+    }
+
     Game.stop_streets();
     Game.frus_cont.stopTime('frustrating');
 
@@ -430,7 +509,7 @@ Game = {
       $(this).animate({ opacity : 0 });  
     });
 
-    if (Game.with_sounds) {
+    if (Game.with_sound) {
       Game.sounds.explosion.play();
     }
   },
@@ -539,7 +618,9 @@ var Car = function(car_hash){
   this.frustration_level1    = 4;
   this.frustration_level2    = 5;
   this.speed                 = 60; // pixels per second
-  this.polling_rate          = 60;
+  this.polling_rate          = 50;
+  this.polling_fast          = 50;
+  this.polling_slow          = 500;
   this.at_intersection       = false;
   this.on_street             = false;
   this.orientation           = 'horizontal';
@@ -647,7 +728,6 @@ var Car = function(car_hash){
       stopTime('frustrating').
       everyTime( (self.travel_time/5)*1000, 'frustrating', function(){
       
-        console.log('paused',Game.paused);
         if (Game.paused!==true) {
           self.frustration_checks+=1;
         
@@ -659,15 +739,17 @@ var Car = function(car_hash){
           if (self.frustration == self.frustration_level1) {
             self.dom.addClass('frustrated');
             self.add_frustration_cloud();
-            if (Game.with_sounds) {
-              Game.sounds.honk1.play();  
+            if (Game.with_sound && (Math.random()*5 > 3)) {
+              var horn_name = 'horns_short' + (Math.floor(Math.random()*Game.raw_sounds.horns_short.length));
+              Game.sounds[horn_name].play();
             }
             
           } else if (self.frustration >= self.frustration_level2) {
             self.dom.addClass('very_frustrated');
             self.add_frustration_cloud(true);
-            if (Game.with_sounds) {
-              Game.sounds.honk2.play();  
+            if (Game.with_sound) {
+              var horn_name = 'horns_long' + (Math.floor(Math.random()*Game.raw_sounds.horns_long.length));
+              Game.sounds[horn_name].play();
             }
             
           }
@@ -735,12 +817,53 @@ var Car = function(car_hash){
     var self = this,
        speed = self.calculate_speed();
 
-    self.dom.animate({
-      top: self.destinations.top, left: self.destinations.left
-    }, {duration : speed, easing : 'linear'});
+    if ( Game.with_css3_animation===true ) {
+      //console.log('animating with css3');
+      self.dom.css3animate({
+        top      : self.destinations.top, 
+        left     : self.destinations.left 
+        }, speed);
 
+    } else {
+      //console.log('animating traditionally');
+      self.dom.animate({
+          top      : self.destinations.top, 
+          left     : self.destinations.left 
+        },
+        { duration : speed, 
+          easing   : 'linear' 
+        });
+
+    }
+    
     self.moving = true;
     self.remove_frustration_cloud();
+
+  };
+
+  this.stop = function(){
+    var self = this;
+
+    if (Game.with_css3_animation===true) {
+      self.dom.css3animate({
+          top  : self.dom.offset().top, 
+          left : self.dom.offset().left 
+        }, 0);
+    } else {
+      self.dom.stop();  
+    }
+    
+    self.moving = false;
+    
+    // if the car is stopped at a light, we restart the polling, but slower this time  
+    // we maintain the high polling rate if the car is 'intersecting' though, i.e.,
+    // stuck in the middle of an intersection
+    if (!self.dom.hasClass('intersecting')) {
+      self.polling_rate = self.polling_slow;
+      self.dom.stopTime('driving');
+      self.restart();
+    }
+
   };
 
   this.calculate_speed = function(){
@@ -763,26 +886,10 @@ var Car = function(car_hash){
     return speed;
   };
 
-  this.stop = function(){
-
-    this.dom.stop();
-    this.moving = false;
-    
-    // if the car is stopped at a light, we restart the polling, but slower this time  
-    // we maintain the high polling rate if the car is 'intersecting' though, i.e.,
-    // stuck in the middle of an intersection
-    if (!this.dom.hasClass('intersecting')) {
-      this.polling_rate = 500;
-      this.dom.stopTime('driving');
-      this.restart();
-    }
-
-  };
-
   this.restart = function(reset_polling){
     
     var self = this;
-    if (reset_polling===true) { self.polling_rate = 100; }
+    if (reset_polling===true) { self.polling_rate = this.polling_fast; }
     self.dom.stopTime('driving').everyTime( self.polling_rate, 'driving', function(){ self.drive(); });
 
   };
@@ -914,7 +1021,7 @@ var Car = function(car_hash){
 
   this.drive = function(){
     var self = this;
-    
+    //console.log(self.dom.offset().left);
     var leader_or_collision_or_barrier = self.is_colliding();
     if (leader_or_collision_or_barrier) {
       //console.log( leader_or_collision_or_barrier );
@@ -978,82 +1085,74 @@ var Car = function(car_hash){
 };
 
 var Maker = function(){
-    
-    this.initialize   = function(game, street) {
-        
-        var self        = this;
-        self.game       = Game;
-        self.street     = street;
-        self.frequency  = Game.maker_freq; //+(Math.random()*5000);
-        self.max_cars   = Game.max_cars_per_street;
-        self.iterations = 0;
-        self.car_types  = {
-            car         : { type : 'car', width : 15, height : 30, frustrates_by : 1,
-                colors  : [ 'orange' ]
-            },
-            van         : { type : 'van', width : 15, height : 40, frustrates_by : 1 },
-            bus         : { type : 'bus', width : 15, height : 55, frustrates_by : 1.5 },
-            ambulance   : { type : 'ambulance', width : 15, height : 40, frustrates_by : 2 }
-        };
-        self.car_odds = { 'van' : 0.15, 'bus' : 0.04, 'ambulance' : 0.01 };
-        
-        //debugger;
-        
-        _.delay(function(){
-                
-                self.street.dom.everyTime(self.frequency, 'making', function(){
-                                          self.make();
-                                          });
-                
-                self.make();
-                
-                }, (1 + Math.round(Math.random()*3))*1000);
-        
-    };
-    
-    this.generate = function(){
-        var self = this,
-        rand = Math.random();
-        
-        if (rand < self.car_odds.ambulance) {
-            return self.car_types.ambulance;
-        } else if (rand < self.car_odds.bus) {
-            return self.car_types.bus;
-        } else if (rand < self.car_odds.van) {
-            return self.car_types.van;
-        } else {
-            return self.car_types.car;
-        }
-        
-    };
-    
-    this.make = function(){
-        
-        if (Game.paused!==true) {
-            var self     = this,
-            num_cars = 1;
-            
-            if (Math.random() > 0.5 && $(".car." + self.street.name).length < self.max_cars) {
-                self.iterations+=1;
-                for (var i=0; i < num_cars; i++) {
-                    
-                    var car_hash = self.generate(),
-                    car      = new Car(car_hash),
-                    name     = [self.street.name, self.iterations, i].join("-");
-                    
-                    car.initialize(name, self.street, self.street.orientation);
-                    
-                    self.street.cars.push( car ); 
-                }
-            }
-        }
-        
-    };
-    
-    this.stop = function(){
-        this.street.dom.stopTime('making');
-        this.iterations = 0;
-    };
-    
-};
+  
+  this.initialize   = function(game, street) {
+ 
+    var self        = this;
+    self.game       = Game;
+    self.street     = street;
+    self.frequency  = Game.maker_freq; //+(Math.random()*5000);
+    self.max_cars   = Game.max_cars_per_street;
+    self.iterations = 0;
+    self.car_types  = Game.car_types;
+    self.car_odds = { 'van' : 0.15, 'bus' : 0.04, 'ambulance' : 0.01 };
 
+    //debugger;
+
+    _.delay(function(){
+      
+      self.street.dom.everyTime(self.frequency, 'making', function(){
+        self.make();
+      });
+
+      self.make();
+
+    }, (1 + Math.round(Math.random()*3))*1000);
+
+  };
+
+  this.generate = function(){
+    var self = this,
+        rand = Math.random();
+    
+    if (rand < self.car_odds.ambulance) {
+      return self.car_types.ambulance;
+    } else if (rand < self.car_odds.bus) {
+      return self.car_types.bus;
+    } else if (rand < self.car_odds.van) {
+      return self.car_types.van;
+    } else {
+      return self.car_types.car;
+    }
+    
+  };
+
+  this.make = function(){
+    
+    if (Game.paused!==true) {
+      var self     = this,
+        num_cars = 1;
+
+      if (Math.random() > 0.5 && $(".car." + self.street.name).length < self.max_cars) {
+        self.iterations+=1;
+        for (var i=0; i < num_cars; i++) {
+          
+          var car_hash = self.generate(),
+              car      = new Car(car_hash),
+              name     = [self.street.name, self.iterations, i].join("-");
+
+          car.initialize(name, self.street, self.street.orientation);
+
+          self.street.cars.push( car ); 
+        }
+      }
+    }
+
+  };
+
+  this.stop = function(){
+    this.street.dom.stopTime('making');
+    this.iterations = 0;
+  };
+
+};
